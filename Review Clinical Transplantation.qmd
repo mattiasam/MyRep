@@ -1,0 +1,571 @@
+---
+title: "Review Clinical Transplantation"
+format: html
+editor: visual
+---
+
+## 
+
+```{r}
+#| echo: false
+library(tidyverse)
+library(gtsummary)
+library(survival)
+library(here)
+library(survminer)
+library(haven)
+library(writexl)
+
+
+
+
+i_am("here_root.txt")
+dataframe <- read_sav(here::here("VAC_corretto.sav"))
+
+to_factor <- c(
+  "morti",
+  "CAV",
+  "everolimus",
+  "CC",
+  "genere_donatore", 
+  "genere_ricevente",
+  "VAD",
+  "eterotopico",
+  "cuore_rene",
+  "IHD",
+  "IM",
+  "IT",
+  "versamento",
+  "Ciclo",
+  "tacrolimus",
+  "aza",
+  "prednisone",
+  "methPDN",
+  "MMF",
+  "ACE_SART",
+  "CAant",
+  "antialdo",
+  "diuretico",
+  "betabloc",
+  "statina",
+  "diabete",
+  "ipts",
+  "ipercolesterolemia"
+)
+
+#FUNCTION TO CALCULATE PHM
+## Define the constants for men and women
+a_lv_male <- 8.25
+a_lv_female <- 6.82
+a_rv_male <- 11.25
+a_rv_female <- 10.59
+
+## Function to calculate predicted LV mass
+calculate_left_PHM <- function(gender, height, weight) {
+  lv_mass <- ifelse(is.na(height) | is.na(weight),NA,
+                    ifelse(gender == 1,
+                           a_lv_male * height^0.54 * weight^0.61,
+                           a_lv_female * height^0.54 * weight^0.61))
+  return(lv_mass)
+}
+
+## Function to calculate predicted RV mass
+calculate_right_PHM <- function(gender, age, height, weight) {
+  rv_mass <- ifelse(is.na(height) | is.na(weight), NA,
+                    ifelse(gender == 1,
+                           a_rv_male * age^(-0.32) * height^1.135 * weight^0.315,
+                           a_rv_female * age^(-0.32) * height^1.135 * weight^0.315))
+  return(rv_mass)
+}
+
+
+df <- dataframe |> 
+  mutate(
+    recipient_BMI = peso_ricevente / (altezza_ricevente^2),
+    recipient_height_cm = altezza_ricevente * 100,
+    recipient_BSA = 0.007184 * recipient_height_cm^0.725 * peso_ricevente^0.425,
+    recipient_left_PHM = calculate_left_PHM(genere_ricevente, altezza_ricevente, peso_ricevente),
+    recipient_right_PHM = calculate_right_PHM(genere_ricevente, age_tx, altezza_ricevente, peso_ricevente),
+    recipient_total_PHM = recipient_left_PHM + recipient_right_PHM,
+    
+    donor_BMI = peso_donatore / (altezza_donatore^2),
+    donor_height_cm = altezza_donatore * 100,
+    donor_BSA = 0.007184 * donor_height_cm^0.725 * peso_donatore^0.425,
+    donor_left_PHM = calculate_left_PHM(genere_ricevente, altezza_ricevente, peso_ricevente),
+    donor_right_PHM = calculate_right_PHM(genere_donatore, donorage, altezza_donatore, peso_donatore),
+    donor_total_PHM = donor_left_PHM + donor_right_PHM,
+    
+    Ees_calcolato =ESP/VTS_eco,
+    Ea_calcolato = ESP/SV,
+    VAC_calcolato = Ea_calcolato/Ees_calcolato,
+    SW_calcolato = ESP*SV,
+    PE_calcolato =(ESP*VTS_eco)/2,
+    PVA_calcolato = PE_calcolato + SW_calcolato,
+    efficiency_calcolato = SW_calcolato/PVA_calcolato*100,
+    LVEF_calcolato = ((VTD_eco-VTS_eco)/VTD_eco)*100,
+    LV_mass = 1.05 * ((DTD + SIV + PP)^3 - DTD^3) + 0.6,
+    LVMI = LV_mass / recipient_BSA,
+    sex_mismatch = ifelse(genere_ricevente != genere_donatore, "Mismatch", "Match"),
+    SV = VTD_eco-VTS_eco
+  ) |>
+  
+  select (
+    morti, fup_morti, fup_morti_anni, 
+    CAV, everolimus, CC, 
+    DT, 
+    GFR, 
+    genere_ricevente, age_tx, genere_donatore,sex_mismatch, 
+    tempoischemia, 
+    VAD, 
+    eterotopico, 
+    cuore_rene, 
+    IHD, 
+    obesity,
+    donorage, 
+    donorBMI, 
+    recipient_BMI, 
+    hb, hct, 
+    IM, IT, PAPs, versamento, azotemia, AST, ALT, Na, K, 
+    Ciclo, tacrolimus, aza, prednisone, methPDN, MMF, ACE_SART, CAant, antialdo, diuretico, betabloc, statina, 
+    EsuEprimo, 
+    diabete, ipts, ipercolesterolemia,
+    DTD, PP, SIV, ATD, ATS, FA, EsuA, TAPSE, 
+    ESVi, VTS_eco, EDVi, VTD_eco, SV, EsuA, 
+    recipient_BSA, 
+    recipient_total_PHM, 
+    donor_BMI, 
+    donor_BSA, 
+    donor_total_PHM, 
+    Ees_calcolato, 
+    Ea_calcolato, 
+    VAC_calcolato, SW_calcolato, PE_calcolato, PVA_calcolato, efficiency_calcolato, LVEF_calcolato, LV_mass, LVMI,
+    Eed, Eed_1, ESP,
+    VAC_mediana,
+    Ees_mediana,
+    Ea_mediana
+  ) |>
+  
+   mutate(across(
+    all_of(to_factor),
+    .fns = as.factor
+    ),
+    above_VAC = VAC_calcolato >= median(VAC_calcolato, na.rm = TRUE),
+    above_Ea = Ea_calcolato >= median(Ea_calcolato, na.rm = TRUE),
+    above_Ees = Ees_calcolato >= median(Ees_calcolato, na.rm = TRUE)
+  )   |> 
+  filter(
+    eterotopico == 0
+  )
+
+
+remove_spss_attributes <- function(x) {
+  attributes(x) <- NULL
+  return(x)
+}
+
+df <- df %>%
+  mutate(across(everything(), remove_spss_attributes))
+
+
+```
+
+**DESCRIPTIVE ANALYSIS**
+
+```{r}
+
+table1 <- df |> 
+  select(genere_ricevente, age_tx, recipient_BSA, recipient_BMI, donorage, donor_BMI, tempoischemia, sex_mismatch, eterotopico, cuore_rene, IHD,
+  
+  hb, hct, GFR, azotemia, AST, ALT, Na, K, diabete, ipts, ipercolesterolemia, obesity, Ciclo, everolimus, tacrolimus, aza, methPDN, MMF, ACE_SART, CAant, antialdo, betabloc, diuretico, statina             
+  ) |> 
+  tbl_summary(
+    missing = "no"
+  )
+
+table2 <- df |> 
+  select(DTD, 
+    PP, SIV,
+    LVMI,
+    VTD_eco, VTS_eco, SV, LVEF_calcolato, 
+    DT, EsuA
+  ) |> 
+  tbl_summary(
+    missing = "no"
+  )
+
+table2
+
+
+
+
+table3 <- df |> 
+  select(
+    Ea_calcolato, Ees_calcolato, VAC_calcolato, SW_calcolato, PE_calcolato, PVA_calcolato, efficiency_calcolato, Eed, Eed_1, ESP
+  ) |> 
+  tbl_summary(
+    missing = "no"
+  )
+
+sup_table2 <- df |> 
+  select(above_Ees,
+    VAC_calcolato, Ea_calcolato, Eed, Eed_1, SW_calcolato,  PE_calcolato, PVA_calcolato, efficiency_calcolato, ESP, LVEF_calcolato, VTD_eco, VTS_eco, SV, DTD, PP, SIV, LVMI
+  ) |> 
+  tbl_summary(
+    by = above_Ees,
+    missing = "no"
+  ) |> 
+  add_p() |> 
+  add_overall()
+  
+
+
+sup_table3 <- df |> 
+  select(above_Ea,
+    VAC_calcolato, Ees_calcolato, Eed, Eed_1, SW_calcolato,  PE_calcolato, PVA_calcolato, efficiency_calcolato, ESP, LVEF_calcolato, VTD_eco, VTS_eco, SV, DTD, PP, SIV, LVMI
+  ) |> 
+  tbl_summary(
+    by = above_Ea,
+    missing = "no"
+  ) |> 
+  add_p() |> 
+  add_overall()
+ 
+
+
+sup_table4 <- df |> 
+  select(above_VAC,
+    Ea_calcolato, Ees_calcolato, Eed, Eed_1, SW_calcolato,  PE_calcolato, PVA_calcolato, efficiency_calcolato, ESP, LVEF_calcolato, VTD_eco, VTS_eco, SV, DTD, PP, SIV, LVMI
+  ) |> 
+  tbl_summary(
+    by = above_VAC,
+    missing = "no"
+  ) |> 
+  add_p() |> 
+  add_overall()
+ 
+
+
+sup_table4
+
+
+```
+
+COX UNIVAR
+
+```{r}
+
+##COX ANALYSIS
+
+surv_obj <- Surv(time = df$fup_morti_anni, event = df$morti)
+
+df <- df |> 
+  mutate(
+    genere_ricevente = as.factor(genere_ricevente),
+    genere_donatore = as.factor(genere_donatore),
+    VAC_mediana = as.factor(VAC_mediana)
+  )
+
+
+predictor_vars <- c("VAC_mediana", "Ees_mediana", "Ea_mediana", "VAC_calcolato", "Ea_calcolato", "Ees_calcolato", "Eed_1", "SW_calcolato", "PE_calcolato", 
+                    "PVA_calcolato", "efficiency_calcolato", "LVEF_calcolato", "VTD_eco", "VTS_eco", "SV", 
+                    "ESP", "age_tx", "donorage", "genere_ricevente", "genere_donatore", "sex_mismatch", 
+                    "recipient_BSA", "recipient_BMI", "donor_BMI", "tempoischemia", "VAD", "IHD", 
+                    "eterotopico", "cuore_rene", "tacrolimus", "everolimus", "Ciclo", "aza", 
+                    "prednisone", "methPDN", "MMF", "ACE_SART", "CAant", "antialdo", "diuretico", 
+                    "betabloc", "statina", "diabete", "ipts", "ipercolesterolemia", "obesity", "GFR", 
+                    "DT", "EsuA", "Ees_calcolato", "IM", "IT", "TAPSE", "PAPs", 
+                    "versamento", "DTD", "PP", "LVMI", "hb", "hct", "azotemia", "AST", "ALT", "Na", "K")
+
+
+
+
+
+table_cox1 <- df |>
+  tbl_uvregression(
+    method = coxph,
+    y = Surv(df$fup_morti_anni, df$morti),
+    include = predictor_vars,
+    exponentiate = TRUE
+  )
+
+# Display the table
+table_cox1
+df$Ees_mediana <- relevel(as.factor(df$Ees_mediana), ref = "2")
+
+
+cox_multi <- coxph(Surv(time = df$fup_morti_anni, event = df$morti) ~ Ees_mediana + Ea_mediana + age_tx + donorage + genere_ricevente + tempoischemia + VAD + IHD + Ciclo + prednisone + diuretico + diabete + hb , data = df)
+
+summary(cox_multi)
+
+cox_multi2 <- coxph(Surv(time = df$fup_morti_anni, event = df$morti) ~ Ees_mediana + Ea_mediana + age_tx + donorage + genere_ricevente + tempoischemia + VAD + IHD + Ciclo + prednisone + diuretico + diabete , data = df)
+
+summary(cox_multi2)
+
+cox_multi3 <- coxph(Surv(time = df$fup_morti_anni, event = df$morti) ~ Ees_mediana + Ea_mediana + age_tx + donorage + tempoischemia + VAD + diabete , data = df)
+
+
+cox_multi4 <- coxph(Surv(time = df$fup_morti_anni, event = df$morti) ~ age_tx + donorage + tempoischemia + VAD + diabete , data = df)
+
+summary(cox_multi4)
+
+
+
+
+
+```
+
+Other details
+
+```{r}
+summary(df$fup_morti_anni)
+sum(df$morti == 2)
+survfit(Surv(df$fup_morti_anni, df$morti) ~ 1, data = df)
+survfit(Surv(df$fup_morti_anni, df$morti) ~ VAC_mediana, data = df)
+survfit(Surv(df$fup_morti_anni, df$morti) ~ Ees_mediana, data = df)
+survfit(Surv(df$fup_morti_anni, df$morti) ~ Ea_mediana, data = df)
+
+
+performance <- function(model) {
+  c <- concordance(model)$concordance
+  se <- sqrt(concordance(model)$var)
+  ci_lower <- c - 1.96 * se
+  ci_upper <- c + 1.96 * se
+  chi = summary(model)$logtest["test"]
+  
+  list(
+    "Harrell-C" = c,
+    "lower 95% CI" = ci_lower,
+    "higher 95% CI" = ci_upper,
+    "chisquare" = chi
+  )
+}
+
+report_cox_pre <- performance(cox_multi4)
+report_cox_pre
+
+report_cox_post <- performance(cox_multi3)
+report_cox_post
+
+
+```
+
+Graph models comparison
+
+```{r}
+# Define the data
+df <- data.frame(
+  Model = c("Model 1", "Model 1 + Ea and Ees"),
+  C_statistic = c(0.75, 0.83),  # Median C-statistics
+  lower_CI = c(0.72, 0.77),  # Lower confidence interval
+  upper_CI = c(0.78, 0.88)   # Upper confidence interval
+)
+
+# Compute error bars (difference between upper/lower CI and the median)
+df$error_lower <- df$C_statistic - df$lower_CI
+df$error_upper <- df$upper_CI - df$C_statistic
+# Create the bar plot
+ggplot(df, aes(x = Model, y = C_statistic, fill = Model)) +
+  geom_bar(stat = "identity", color = "black", width = 0.5) +  # Bar plot
+  geom_errorbar(aes(ymin = lower_CI, ymax = upper_CI), width = 0.2) +  # Error bars
+  labs(y = "C-statistic") +  # Axis label
+  theme_minimal() +  # Clean theme
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +  # Rotate x-axis labels
+  scale_fill_manual(values = c("orange", "gray")) +  # Custom colors
+  annotate("text", x = 1.5, y = 0.9, label = "p = 0.04")  # Add p-value annotation
+
+
+```
+
+Survival curves
+
+```{r}
+surv_obj <- Surv(time = df$fup_morti_anni, event = df$morti)
+log_rank_test <- survfit(surv_obj ~ group, data = df)
+print(log_rank_test)
+#PLOT OVERALL
+fit_overal <- survfit(Surv(time = df$fup_morti_anni, event = df$morti)~1) 
+
+# Create the survival plot
+plot_overall <- ggsurvplot(
+    fit_overal,
+    data = df,
+    conf.int = FALSE,        # No confidence interval
+    risk.table = TRUE,       # Show risk table
+    title = "Overall Cardiac Mortality",
+    palette = "red",
+    legend.title = "",
+    legend.labs = c("All"),  # Customize legend label
+    legend = c(0.2, 0.2)     # Move legend inside the plot (x, y coordinates)
+)
+
+plot_overall$plot <- plot_overall$plot + 
+    theme(
+        plot.title = element_text(hjust = 0.5, face = "bold", size = 14), # Center title
+        legend.position = c(0.8, 0.95) # Move legend inside Cartesian plane
+    )
+plot_overall
+
+
+#FIT ACCORDING TO VAC
+fit_VAC <- survfit(Surv(time = df$fup_morti_anni, event = df$morti)~ df$VAC_mediana) 
+
+plot_VAC <- ggsurvplot(
+    fit_VAC,
+    data = df,
+    conf.int = FALSE,        # No confidence interval
+    risk.table = TRUE,       # Show risk table
+    pval = TRUE,
+    title = "Cardiac death according to VAC",
+    palette = c("#1f78b4", "red"), linetype = c(1, 1),
+    legend.title = "",
+    legend.labs = c("VAC \u2264 0.59", "VAC > 0.59"),
+    legend = c(0.2, 0.2)     # Move legend inside the plot (x, y coordinates)
+  )
+
+plot_VAC$plot <- plot_VAC$plot + 
+    theme(
+        plot.title = element_text(hjust = 0.5, face = "bold", size = 14), # Center title
+        legend.position = c(0.8, 0.95) # Move legend inside Cartesian plane
+    )
+
+plot_VAC
+
+
+
+#FIT ACCORDING TO Ea
+fit_Ea <- survfit(Surv(time = df$fup_morti_anni, event = df$morti)~ df$Ea_mediana) 
+
+plot_Ea <- ggsurvplot(
+    fit_Ea,
+    data = df,
+    conf.int = FALSE,        # No confidence interval
+    risk.table = TRUE,       # Show risk table
+    pval = TRUE,
+    title = "Cardiac death according to Ea",
+    palette = c("#1f78b4", "red"), linetype = c(1, 1),
+    legend.title = "",
+    legend.labs = c("Ea\u22644mmHg/mL/m2", "Ea>4mmHg/mL/m2"),
+    legend = c(0.2, 0.2)     # Move legend inside the plot (x, y coordinates)
+  )
+
+plot_Ea$plot <- plot_Ea$plot + 
+    theme(
+        plot.title = element_text(hjust = 0.5, face = "bold", size = 14), # Center title
+        legend.position = c(0.8, 0.95) # Move legend inside Cartesian plane
+    )
+
+plot_Ea
+
+
+#FIT ACCORDING TO Ea
+fit_Ees <- survfit(Surv(time = df$fup_morti_anni, event = df$morti)~ df$Ees_mediana) 
+
+plot_Ees <- ggsurvplot(
+    fit_Ees,
+    data = df,
+    conf.int = FALSE,        # No confidence interval
+    risk.table = TRUE,       # Show risk table
+    pval = TRUE,
+    title = "Cardiac death according to Ees",
+    palette = c("red", "#1f78b4"), linetype = c(1, 1),
+    legend.title = "",
+    legend.labs = c("Ees\u22646.7mmHg/mL/m2", "Ees>6.7mmHg/mL/m2"),
+    legend = c(0.2, 0.2)     # Move legend inside the plot (x, y coordinates)
+  )
+
+plot_Ees$plot <- plot_Ees$plot + 
+    theme(
+        plot.title = element_text(hjust = 0.5, face = "bold", size = 14), # Center title
+        legend.position = c(0.8, 0.95) # Move legend inside Cartesian plane
+    )
+
+plot_Ees
+```
+
+HEALTHY CONTROL MEASURE UNITS MATCH
+
+```{r}
+healthyframe <- read_sav(here::here("cfr_controlli.sav")) |>
+  
+  mutate(
+    across(everything(), remove_spss_attributes)
+  ) |> 
+  
+  mutate(
+    VTD_calc = (SV /FE)*100,
+    diff_VTD = VTD_calc - VTDind,
+    VTS_calc = VTD_calc - SV,
+    diff_VTS = VTS_calc - VTSind
+  )
+
+  
+
+
+
+# Generated height and weight data
+heights <- c(178.5, 174.0, 179.5, 185.7, 173.4, 173.4, 186.1, 180.4, 171.7, 178.8, 
+             171.8, 171.7, 176.7, 161.6, 162.9, 171.1, 167.9, 177.2, 168.6, 165.1, 
+             185.3, 173.4, 175.5, 165.0, 171.2, 175.8, 166.9, 177.6, 170.8, 173.0, 
+             170.8, 188.0, 174.9, 167.6, 180.8, 166.5, 163.3, 150.2, 154.0, 163.2, 
+             166.4, 163.0, 161.3, 160.2, 153.1, 157.7, 159.2, 168.3, 164.1, 151.4, 
+             163.9, 159.7, 157.9, 165.7, 168.2, 167.6, 157.0, 160.1, 164.0, 167.9)
+
+weights <- c(57.5, 47.1, 57.1, 59.5, 69.2, 66.1, 84.9, 63.7, 48.8, 72.2, 
+             69.1, 62.8, 72.9, 56.3, 57.6, 58.3, 45.7, 49.0, 45.9, 61.5, 
+             58.9, 61.9, 76.8, 51.4, 57.8, 71.7, 51.3, 47.9, 53.9, 50.3, 
+             73.7, 82.9, 66.9, 69.4, 77.1, 50.0, 66.7, 52.4, 58.5, 66.7, 
+             53.6, 47.7, 50.2, 54.3, 58.1, 61.9, 45.1, 59.6, 55.4, 48.2, 
+             48.0, 52.2, 63.7, 53.5, 59.8, 64.7, 51.9, 66.1, 69.0, 52.1)
+
+
+# Assign generated height and weight values in order
+
+hc_df <- healthyframe |> 
+  filter(TXvsCtrl == 0) |> 
+  mutate(
+    height = heights,
+    weight = weights,
+    BSA = sqrt((height * weight) / 3600),
+    final.VTDi = VTD_calc/BSA,
+    final.VTSi = VTS_calc/BSA,
+    final.SVi = SV/BSA,
+    final.Ea = Ea*BSA,
+    final.Ees = Ees*BSA,
+    final.SW = SW/BSA,
+    final.PE = PE/BSA,
+    final.PVA = (SW+PE)/BSA
+  ) |> 
+  select(
+    TXvsCtrl, final.Ea, final.Ees, Eed, VAC, final.SW, final.PE, final.PVA, efficiency, FE, final.VTDi, final.VTSi, final.SVi
+  )
+
+tx_df <- healthyframe |> 
+  filter(TXvsCtrl == 1) |> 
+
+  rename(
+    final.VTDi = VTDind,
+    final.VTSi = VTSind,
+    final.SVi = SV,
+    final.Ea = Ea,
+    final.Ees = Ees,
+    final.SW = SW,
+    final.PE = PE,
+    final.PVA = PVA
+  )  |> 
+
+  select(
+    TXvsCtrl, final.Ea, final.Ees, Eed, VAC, final.SW, final.PE, final.PVA, efficiency, FE, final.VTDi, final.VTSi, final.SVi
+  ) 
+
+final_df <- bind_rows (hc_df, tx_df)
+
+
+compare_table <- final_df |> 
+  tbl_summary(
+    by = TXvsCtrl,
+    missing = "no"
+  ) |> 
+  add_p()
+
+compare_table
+```
